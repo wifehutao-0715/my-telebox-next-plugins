@@ -170,6 +170,20 @@ async function ensureQuoteAssets(): Promise<void> {
     await Promise.all(missingAssets.map((rel) => downloadFileIfMissingOrChanged(`${QUOTE_ASSETS_BASE_URL}/${rel}`, path.join(QUOTE_ASSETS_DIR, rel))));
   }
 
+  // Vendor code (emoji-image.js) resolves emoji JSON relative to vendor/../assets/emoji/
+  // = plugins/quote/assets/emoji/. Ensure a symlink from there → QUOTE_ASSETS_DIR/emoji.
+  const vendorEmojiDir = path.join(quotePluginDir(), "quote", "assets", "emoji");
+  if (!fs.existsSync(vendorEmojiDir)) {
+    const targetDir = path.join(QUOTE_ASSETS_DIR, "emoji");
+    try {
+      fs.mkdirSync(path.dirname(vendorEmojiDir), { recursive: true });
+      fs.symlinkSync(targetDir, vendorEmojiDir, "dir");
+      logger.warn("quote loader created emoji symlink", { from: vendorEmojiDir, to: targetDir });
+    } catch (e: unknown) {
+      logger.warn("quote loader failed to symlink emoji dir", getErrorMessage(e));
+    }
+  }
+
   await Promise.all(
     QUOTE_FONT_FILES.map(async (font) => {
       const filePath = path.join(QUOTE_ASSETS_DIR, font.name);
