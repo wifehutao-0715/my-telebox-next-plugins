@@ -123,15 +123,67 @@ async function downloadFileIfMissingOrChanged(url: string, filePath: string): Pr
   fs.writeFileSync(filePath, data);
 }
 
-function requireOrInstall(pkg: string): unknown {
+function projectRoot(): string {
+  // TeleBox always starts with cwd = repo root; vendor deps must land here.
+  return process.cwd();
+}
+
+function projectRequire(): NodeRequire {
+  // Resolve from package.json so plugins/* and tsx loaders cannot lose node_modules.
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { createRequire } = require("module") as typeof import("module");
+  return createRequire(path.join(projectRoot(), "package.json"));
+}
+
+function isModuleNotFoundError(err: unknown): boolean {
+  const e = err as { code?: string; message?: string };
+  if (e?.code === "MODULE_NOT_FOUND" || e?.code === "ERR_MODULE_NOT_FOUND") return true;
+  return /Cannot find module/i.test(String(e?.message || err || ""));
+}
+
+function forceNpmInstall(pkg: string): void {
+  // Prefer host helper (cleans npm_* env). Fallback to direct npm in project root.
   try {
-    return require(pkg);
-  } catch (err: unknown) {
-    const code = (err as { code?: string })?.code;
-    if (code !== "MODULE_NOT_FOUND" && code !== "ERR_MODULE_NOT_FOUND") throw err;
-    logger.warn("quote loader installing npm package", { pkg });
     npm_install(pkg);
-    return require(pkg);
+  } catch (e: unknown) {
+    logger.warn("quote npm_install helper failed, will force npm", { pkg, err: getErrorMessage(e) });
+  }
+  try {
+    projectRequire().resolve(pkg);
+    return;
+  } catch {
+    // still missing after helper — force install into cwd
+  }
+  const { execFileSync } = require("child_process") as typeof import("child_process");
+  logger.warn("quote loader force npm install", { pkg, cwd: projectRoot() });
+  execFileSync(
+    "npm",
+    ["install", pkg, "--no-fund", "--no-audit", "--loglevel=error"],
+    {
+      cwd: projectRoot(),
+      stdio: "pipe",
+      encoding: "utf-8",
+      env: process.env,
+    },
+  );
+}
+
+function requireOrInstall(pkg: string): unknown {
+  const req = projectRequire();
+  try {
+    return req(pkg);
+  } catch (err: unknown) {
+    if (!isModuleNotFoundError(err)) throw err;
+    logger.warn("quote loader installing npm package", { pkg, cwd: projectRoot() });
+    forceNpmInstall(pkg);
+    // Drop stale cache entry if any, then require again from project root.
+    try {
+      const resolved = projectRequire().resolve(pkg);
+      delete require.cache[resolved];
+    } catch (_: unknown) {
+      /* first install — nothing cached */
+    }
+    return projectRequire()(pkg);
   }
 }
 
@@ -213,10 +265,19 @@ async function getQuoteGen(): Promise<any> {
       // vendor/ pulls these in at module load (quote-generate/index.js requires
       // telegraf; avatar.js requires lru-cache + runes; media.js requires jimp +
       // smartcrop-sharp; emoji-db.js requires emoji-db). They are not declared in
-      // the host package.json, so install on demand or generate.js fails to load.
+      // the host package.json, so install on demand into project root node_modules.
       for (const dep of QUOTE_VENDOR_NPM_DEPS) requireOrInstall(dep);
-      return require("./quote/generate");
-    })();
+      // Load generate.js via createRequire(plugin dir) so relative vendor paths work
+      // and nested require("telegraf") walks up to the project root node_modules.
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { createRequire } = require("module") as typeof import("module");
+      const pluginRequire = createRequire(path.join(quotePluginDir(), "quote.ts"));
+      return pluginRequire("./quote/generate");
+    })().catch((err: unknown) => {
+      // Allow next command to retry install/load after a transient failure.
+      quoteGenPromise = undefined;
+      throw err;
+    });
   }
   return quoteGenPromise;
 }
