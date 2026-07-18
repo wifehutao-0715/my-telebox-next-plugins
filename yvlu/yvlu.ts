@@ -586,15 +586,10 @@ async function generateQuote(
   try {
     const response = await axios({
       method: "post",
+      url: "https://bot.lyo.su/quote/generate",
       timeout,
       data: quoteData,
       responseType: "arraybuffer",
-      ...JSON.parse(
-        Buffer.from(
-          "eyJ1cm...ifX0=",
-          "base64",
-        ).toString("utf-8"),
-      ),
     });
 
     logger.info("quote-api响应状态:", response.status);
@@ -725,13 +720,23 @@ class YvluPlugin extends Plugin {
         // 处理保存贴纸/图片到贴纸包的逻辑
         await this.handleSaveStickerToSet(msg);
       } else if (valid) {
-        // 造谣模式：收集未被解析为标志的剩余参数作为自定义文本
-        const knownFlags = new Set(["r", "reply", "s", "webp", "image", "png", "stories"]);
+        // 造谣模式：第一个非选项参数起，后续内容全部按原文保留。
+        const optionArgs = args.slice(1);
         let fabricateText: string | undefined;
-        if (args.length > 1) {
-          const remaining = args.slice(1).filter(a => !knownFlags.has(a.toLowerCase()) && !/^\d+$/.test(a));
-          if (remaining.length > 0) {
-            fabricateText = remaining.join(" ");
+        for (let i = 0; i < optionArgs.length; i++) {
+          const value = optionArgs[i].toLowerCase();
+          const isOption =
+            value === "r" ||
+            value === "reply" ||
+            value === "s" ||
+            value === "webp" ||
+            value === "image" ||
+            value === "png" ||
+            value === "stories" ||
+            /^\d+$/.test(value);
+          if (!isOption) {
+            fabricateText = optionArgs.slice(i).join(" ");
+            break;
           }
         }
 
@@ -1084,7 +1089,7 @@ class YvluPlugin extends Plugin {
                   : undefined,
               },
               text: fabricateText && i === 0 ? fabricateText : (message.text || ""),
-              entities: entities,
+              entities: fabricateText && i === 0 ? [] : entities,
               avatar: shouldShowAvatar,
               ...(replyBlock ? { replyMessage: replyBlock } : {}),
             };
