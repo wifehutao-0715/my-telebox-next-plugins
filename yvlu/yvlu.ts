@@ -72,6 +72,123 @@ function isTgsFormat(buffer: Buffer): boolean {
   return buffer[0] === 0x1f && buffer[1] === 0x8b;
 }
 
+type RasterThumbnail = {
+  buffer: Buffer;
+  mime: "image/webp" | "image/png" | "image/jpeg";
+};
+
+function detectRasterMime(buffer: Buffer): RasterThumbnail["mime"] | undefined {
+  if (!buffer || buffer.length < 3) return undefined;
+  if (
+    buffer.length >= 12 &&
+    buffer.subarray(0, 4).toString("ascii") === "RIFF" &&
+    buffer.subarray(8, 12).toString("ascii") === "WEBP"
+  ) return "image/webp";
+  if (
+    buffer.length >= 8 &&
+    buffer.subarray(0, 8).equals(
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    )
+  ) return "image/png";
+  if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+    return "image/jpeg";
+  }
+  return undefined;
+}
+
+function asBuffer(value: unknown): Buffer | undefined {
+  if (Buffer.isBuffer(value)) return value;
+  if (value instanceof Uint8Array) return Buffer.from(value);
+  return undefined;
+}
+
+function thumbnailFileSize(thumbnail: any): number | undefined {
+  const directSize = Number(thumbnail?.size ?? 0);
+  if (directSize > 0) return directSize;
+  if (Array.isArray(thumbnail?.sizes)) {
+    const sizes = thumbnail.sizes
+      .map((size: unknown) => Number(size))
+      .filter((size: number) => Number.isFinite(size) && size > 0);
+    if (sizes.length) return Math.max(...sizes);
+  }
+  return undefined;
+}
+
+function thumbnailWeight(thumbnail: any): number {
+  const width = Number(thumbnail?.w ?? thumbnail?.width ?? 0) || 0;
+  const height = Number(thumbnail?.h ?? thumbnail?.height ?? 0) || 0;
+  return width * height || thumbnailFileSize(thumbnail) || 0;
+}
+
+async function downloadRenderableThumbnail(
+  client: any,
+  media: any,
+  document: any,
+): Promise<RasterThumbnail | undefined> {
+  const thumbnails = Array.isArray(document?.thumbs)
+    ? [...document.thumbs].sort(
+        (left: any, right: any) =>
+          thumbnailWeight(right) - thumbnailWeight(left),
+      )
+    : [];
+
+  for (const thumbnail of thumbnails) {
+    const embedded = asBuffer(thumbnail?.bytes);
+    if (!embedded) continue;
+    const mime = detectRasterMime(embedded);
+    if (mime) return { buffer: embedded, mime };
+  }
+
+  const canBuildLocation =
+    document?.id != null &&
+    document?.accessHash != null &&
+    document?.fileReference != null;
+  if (canBuildLocation) {
+    for (const thumbnail of thumbnails) {
+      const thumbSize = String(thumbnail?.type || "");
+      if (!thumbSize) continue;
+      try {
+        const location = {
+          _: "inputDocumentFileLocation",
+          id: document.id,
+          accessHash: document.accessHash,
+          fileReference: document.fileReference,
+          thumbSize,
+        };
+        const options: Record<string, unknown> = {};
+        if (document.dcId != null) options.dcId = document.dcId;
+        const fileSize = thumbnailFileSize(thumbnail);
+        if (fileSize) options.fileSize = fileSize;
+        const downloaded = asBuffer(
+          await client.downloadAsBuffer(location, options),
+        );
+        if (!downloaded) continue;
+        const mime = detectRasterMime(downloaded);
+        if (mime) return { buffer: downloaded, mime };
+      } catch (error: unknown) {
+        logger.warn(
+          "[yvlu] Failed to download document thumbnail " + thumbSize + ":",
+          error,
+        );
+      }
+    }
+  }
+
+  try {
+    const downloaded = asBuffer(
+      await client.downloadAsBuffer(media, { thumb: 1 }),
+    );
+    if (downloaded) {
+      const mime = detectRasterMime(downloaded);
+      if (mime) return { buffer: downloaded, mime };
+    }
+  } catch (error: unknown) {
+    logger.warn("[yvlu] Legacy thumbnail download failed:", error);
+  }
+
+  return undefined;
+}
+
 // 检查 TGS 转换依赖
 async function checkTgsDependencies(): Promise<{
   ok: boolean;
@@ -637,8 +754,8 @@ function getMediaKind(msg: any): string | undefined {
   const type = media.type || media._ || media.className || "";
   const attrs = getDocumentAttributes(msg);
   if (attrs.some((a: any) => {
-    const t = a.type || a._ || a.className || "";
-    return t.includes("Sticker");
+    const t = String(a.type || a._ || a.className || "").toLowerCase();
+    return t.includes("sticker");
   })) return "sticker";
   if (attrs.some((a: any) => {
     const t = a.type || a._ || a.className || "";
@@ -1175,8 +1292,8 @@ class YvluPlugin extends Plugin {
                 const isSticker =
                   mediaAttrs?.some(
                     (a: any) => {
-                      const t = a.type || a._ || a.className;
-                      return t === "documentAttributeSticker" || t === "sticker";
+                      const t = String(a.type || a._ || a.className || "").toLowerCase();
+                      return t.includes("sticker");
                     },
                   ) || false;
 
@@ -1209,20 +1326,26 @@ class YvluPlugin extends Plugin {
                   isAnimatedContent ? {} : { thumb: 1 },
                 ).then((b) => Buffer.from(b));
                 if (Buffer.isBuffer(buffer)) {
-                  let finalBuffer = buffer;
-                  let finalMime = mimeType;
+                  let finalBuffer: Buffer | undefined = buffer;
+                  let finalMime: string | undefined = mimeType;
 
                   // 如果是 TGS 格式，转换为 WebM
                   if (isTgsSticker || isTgsFormat(buffer)) {
+                    finalBuffer = undefined;
+                    finalMime = undefined;
                     try {
                       const depCheck = await checkTgsDependencies();
                       if (!depCheck.ok) {
-                        logger.error(`[yvlu] ${depCheck.message}`);
+                        logger.warn(`[yvlu] ${depCheck.message}`);
                       } else {
                         logger.info(
                           `[yvlu] 检测到 TGS 贴纸，开始转换为 WebM...`,
                         );
-                        finalBuffer = await convertTgsToWebm(buffer);
+                        const convertedBuffer = await convertTgsToWebm(buffer);
+                        if (!isWebmFormat(convertedBuffer)) {
+                          throw new Error("TGS converter returned invalid WebM data");
+                        }
+                        finalBuffer = convertedBuffer;
                         finalMime = "video/webm";
                         logger.info(
                           `[yvlu] TGS -> WebM 转换成功，大小: ${finalBuffer.length}`,
@@ -1233,7 +1356,28 @@ class YvluPlugin extends Plugin {
                     }
                   }
                   // 如果是 MP4/GIF，转换为 WebM
-                  else if (isGifOrMp4 || isMp4Format(buffer)) {
+                  if ((isTgsSticker || isTgsFormat(buffer)) && !finalBuffer) {
+                    const thumbnail = await downloadRenderableThumbnail(
+                      client,
+                      message.media,
+                      mediaDoc,
+                    );
+                    if (thumbnail) {
+                      finalBuffer = thumbnail.buffer;
+                      finalMime = thumbnail.mime;
+                      logger.info(
+                        "[yvlu] Using Telegram raster thumbnail for TGS sticker",
+                      );
+                    } else {
+                      logger.error(
+                        "[yvlu] TGS sticker has no renderable thumbnail; media omitted",
+                      );
+                    }
+                  }
+                  if (
+                    !(isTgsSticker || isTgsFormat(buffer)) &&
+                    (isGifOrMp4 || isMp4Format(buffer))
+                  ) {
                     try {
                       logger.info(`[yvlu] 检测到 GIF/MP4，开始转换为 WebM...`);
                       finalBuffer = await convertMp4ToWebm(buffer);
@@ -1248,7 +1392,14 @@ class YvluPlugin extends Plugin {
                   }
 
                   // 使用实际的 mimeType
+                  if (!finalBuffer) {
+                    throw new Error(
+                      "TGS sticker conversion and thumbnail fallback failed",
+                    );
+                  }
                   const mime =
+                    detectRasterMime(finalBuffer) ||
+                    (isWebmFormat(finalBuffer) ? "video/webm" : undefined) ||
                     finalMime ||
                     (mediaTypeForQuote === "sticker"
                       ? "image/webp"
