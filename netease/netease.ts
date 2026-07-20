@@ -265,26 +265,93 @@ async function fetchAndSendAudio(
     return false;
   }
 
+  const audio = mediaMsg.media as any;
+  const replyToId = msg.replyToMessage?.id;
+  const richCaption = mediaMsg.text
+    ? mediaMsg.textWithEntities
+    : caption;
+
+  try {
+    if (!audio.inputMedia) {
+      throw new Error("The bot audio has no reusable input media");
+    }
+    await client.sendMedia(
+      msg.chat.id,
+      audio.inputMedia,
+      {
+        caption: richCaption,
+        ...(replyToId ? { replyTo: replyToId } : {}),
+      },
+    );
+    return true;
+  } catch (reuseError: unknown) {
+    logger.warn(
+      "[netease] reuse bot audio failed, falling back to upload:",
+      reuseError,
+    );
+  }
+
   try {
     const buffer = await client.downloadAsBuffer(
       mediaMsg.media as Parameters<typeof client.downloadAsBuffer>[0],
     );
-    const replyToId = msg.replyToMessage?.id;
+    let thumb: Buffer | undefined;
+    const thumbnails = Array.isArray(audio.thumbnails)
+      ? [...audio.thumbnails].sort(
+          (left: any, right: any) =>
+            (Number(right?.width) || 0) - (Number(left?.width) || 0),
+        )
+      : [];
+    for (const thumbnail of thumbnails) {
+      const width = Number(thumbnail?.width);
+      const height = Number(thumbnail?.height);
+      if (thumbnail?.isVideo) continue;
+      if (
+        (Number.isFinite(width) && width > 320) ||
+        (Number.isFinite(height) && height > 320)
+      ) continue;
+      try {
+        const downloaded = await client.downloadAsBuffer(thumbnail);
+        const candidate = Buffer.isBuffer(downloaded)
+          ? downloaded
+          : Buffer.from(downloaded);
+        const isJpeg =
+          candidate.length >= 3 &&
+          candidate[0] === 0xff &&
+          candidate[1] === 0xd8 &&
+          candidate[2] === 0xff;
+        if (isJpeg && candidate.length <= 200 * 1024) {
+          thumb = candidate;
+          break;
+        }
+      } catch (thumbnailError: unknown) {
+        logger.warn("[netease] download album cover failed:", thumbnailError);
+      }
+    }
+
+    const duration = Number(audio.duration || 0);
+    const title = String(audio.title || "").trim();
+    const performer = String(audio.performer || "").trim();
     await client.sendMedia(
       msg.chat.id,
       {
         type: "audio",
         file: Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer),
-        fileName: "music.mp3",
+        fileName: audio.fileName || "music.mp3",
+        fileMime: audio.mimeType || "audio/mpeg",
+        ...(duration > 0 ? { duration } : {}),
+        ...(title ? { title } : {}),
+        ...(performer ? { performer } : {}),
+        ...(thumb ? { thumb } : {}),
       } as never,
       {
-        caption,
+        caption: richCaption,
         ...(replyToId ? { replyTo: replyToId } : {}),
       },
     );
     return true;
   } catch (uploadError: unknown) {
-    logger.warn("[netease] reupload audio failed, forwarding instead:", uploadError);
+    logger.warn("[netease] rich audio upload failed, forwarding instead:", uploadError);
     try {
       await client.forwardMessagesById({
         fromChatId: bot,
