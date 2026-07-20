@@ -1465,10 +1465,6 @@ class YvluPlugin extends Plugin {
           logger.error(`语录生成失败: ${error}`);
           await msg.edit({ text: `语录生成失败: ${htmlEscape(String(error))}` });
         }
-      } else {
-        await msg.edit({
-          text: html(help_text),
-        });
       }
     },
   };
