@@ -1311,7 +1311,10 @@ class YvluPlugin extends Plugin {
             const mediaObj = (message as any).media;
             if (!isCustomTextMessage && mediaObj) {
               const kind = getMediaKind(message as any);
-              if (kind === "voice") {
+              if (kind === "sticker" && media) {
+                msgItem.mediaType = "sticker";
+                msgItem.mediaCrop = false;
+              } else if (kind === "voice") {
                 const waveform = voiceWaveform(message as any);
                 const attr = audioAttribute(message as any);
                 const duration = Number(attr?.duration ?? attr?.voiceDuration ?? 0) || undefined;
