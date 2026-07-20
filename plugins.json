@@ -8,7 +8,7 @@
     "desc": "自定义语录版 yvlu"
   },
   "netease": {
-    "url": "https://raw.githubusercontent.com/wifehutao-0715/my-telebox-next-plugins/d31c0d2f477ff265205c5fecb7834a0928950fb0/netease/netease.ts",
+    "url": "https://raw.githubusercontent.com/wifehutao-0715/my-telebox-next-plugins/b0ecc8d79d0ad2edd5f482f74720e7b001e8c788/netease/netease.ts",
     "desc": "网易云音乐搜索下载 netease"
   }
 }
