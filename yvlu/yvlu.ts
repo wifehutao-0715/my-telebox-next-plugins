@@ -706,7 +706,10 @@ const QUOTE_API_HEADERS = {
   "User-Agent": "TeleBox/0.2.1",
 };
 
-function detectQuoteImageExt(buffer: Buffer): "webp" | "png" {
+type QuoteMediaExt = "webp" | "png" | "webm";
+
+function detectQuoteMediaExt(buffer: Buffer): QuoteMediaExt {
+  if (isWebmFormat(buffer)) return "webm";
   if (
     buffer.length >= 12 &&
     buffer.subarray(0, 4).toString("ascii") === "RIFF" &&
@@ -716,14 +719,14 @@ function detectQuoteImageExt(buffer: Buffer): "webp" | "png" {
     buffer.length >= 8 &&
     buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
   ) return "png";
-  const preview = buffer.subarray(0, 120).toString("utf8").replace(/\s+/g, " ").trim();
-  throw new Error(`quote-api 返回了非图片数据${preview ? `：${preview.slice(0, 100)}` : ""}`);
+  const header = buffer.subarray(0, 24).toString("hex");
+  throw new Error(`quote-api 返回了不支持的媒体数据${header ? `（头部：${header}）` : ""}`);
 }
 
 // 调用quote-api生成语录
 async function generateQuote(
   quoteData: any,
-): Promise<{ buffer: Buffer; ext: string }> {
+): Promise<{ buffer: Buffer; ext: QuoteMediaExt }> {
   try {
     const response = await axios({
       method: "post",
@@ -743,10 +746,15 @@ async function generateQuote(
       throw new Error(`quote-api HTTP ${response.status}${detail ? `：${detail.slice(0, 120)}` : ""}`);
     }
     const contentType = String(response.headers["content-type"] || "").toLowerCase();
-    if (!contentType.startsWith("image/") && contentType !== "application/octet-stream") {
+    const supportedContentType =
+      contentType.startsWith("image/") ||
+      contentType.startsWith("video/") ||
+      contentType === "application/octet-stream" ||
+      contentType.includes("webm");
+    if (!supportedContentType) {
       throw new Error(`quote-api 返回类型异常：${contentType || "unknown"}`);
     }
-    return { buffer: imageBuffer, ext: detectQuoteImageExt(imageBuffer) };
+    return { buffer: imageBuffer, ext: detectQuoteMediaExt(imageBuffer) };
   } catch (error: unknown) {
     if (axios.isAxiosError(error)) {
       logger.error(`quote-api请求失败:`, {
