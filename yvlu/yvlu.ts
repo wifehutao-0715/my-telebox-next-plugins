@@ -347,6 +347,87 @@ const pluginName = "yvlu";
 
 const commandName = `${mainPrefix}${pluginName}`;
 
+type YvluOutputFormat = "webp" | "image" | "stories";
+
+interface ParsedYvluCommand {
+  count: number;
+  includeReply: boolean;
+  saveToSet: boolean;
+  outputFormat?: YvluOutputFormat;
+  fabricateText?: string;
+  error?: string;
+}
+
+const YVLU_FABRICATION_LABEL = "【虚构内容·仅供娱乐】";
+
+function parseYvluCommand(messageText: string): ParsedYvluCommand {
+  const result: ParsedYvluCommand = {
+    count: 1,
+    includeReply: false,
+    saveToSet: false,
+  };
+  const commandBody = messageText.trimStart().replace(/^\S+(?:\s+|$)/, "");
+  const fabricationMatch = /(^|\s)(fake|fiction|虚构|造谣)(?=\s|$)/i.exec(
+    commandBody,
+  );
+  let optionText = commandBody;
+
+  if (fabricationMatch) {
+    const markerStart = fabricationMatch.index + fabricationMatch[1].length;
+    const textStart = markerStart + fabricationMatch[2].length;
+    optionText = commandBody.slice(0, markerStart).trim();
+    const customText = commandBody.slice(textStart).trim();
+    if (!customText) {
+      result.error = `虚构模式缺少自定义内容。用法：${commandName} fake 文本`;
+      return result;
+    }
+    result.fabricateText = `${YVLU_FABRICATION_LABEL}\n${customText}`;
+  }
+
+  let hasCount = false;
+  const optionArgs = optionText.split(/\s+/).filter(Boolean);
+  for (const arg of optionArgs) {
+    const value = arg.toLowerCase();
+    if (value === "r" || value === "reply") {
+      result.includeReply = true;
+      continue;
+    }
+    if (value === "s" || value === "save") {
+      result.saveToSet = true;
+      continue;
+    }
+    if (value === "webp") {
+      result.outputFormat = "webp";
+      continue;
+    }
+    if (value === "image" || value === "png") {
+      result.outputFormat = "image";
+      continue;
+    }
+    if (value === "stories") {
+      result.outputFormat = "stories";
+      continue;
+    }
+    if (/^\d+$/.test(value)) {
+      result.count = Number.parseInt(value, 10);
+      hasCount = true;
+      continue;
+    }
+    result.error = `未知参数：${arg}`;
+    return result;
+  }
+
+  if (result.count < 1 || result.count > 5) {
+    result.error = "消息数必须在 1 到 5 之间";
+  } else if (result.saveToSet && (optionArgs.length > 1 || result.fabricateText)) {
+    result.error = `保存模式不能与其他参数组合。用法：${commandName} s`;
+  } else if (result.fabricateText && hasCount && result.count !== 1) {
+    result.error = "虚构模式只处理被回复的单条消息，请移除消息数参数";
+  }
+
+  return result;
+}
+
 // 完整 helptext 单段进 description；标题外露，板块正文用可折叠 blockquote
 // 标签与正文之间禁止换行：<blockquote expandable>内容</blockquote>
 const helpFold = (title: string, body: string) =>
@@ -360,6 +441,15 @@ const help_text = [
   helpFold(
     `- 包含回复`,
     `使用 <code>${commandName} r [消息数]</code> 回复一条消息(支持选择部分引用回复) ⚠️ 不得超过 5 条`,
+  ),
+  ``,
+  helpFold(
+    `- 虚构语录（娱乐）`,
+    [
+      `使用 <code>${commandName} fake 自定义内容</code> 回复一条消息生成虚构语录`,
+      `可在 fake 前组合格式与回复选项，例如 <code>${commandName} image r fake 自定义内容</code>`,
+      `成品会强制显示「${YVLU_FABRICATION_LABEL}」标识，避免被误认为真实发言`,
+    ].join("\n"),
   ),
   ``,
   helpFold(
@@ -716,7 +806,7 @@ interface YvluConfig {
 
 class YvluPlugin extends Plugin {
 
-  description: string = `\n生成文字语录贴纸\n\n${help_text}`;
+  description: string = `\n生成文字语录贴纸，支持带明确标识的虚构语录模式\n\n${help_text}`;
   private config: YvluConfig | null = null;
   private configPath: string = "";
 
@@ -778,67 +868,32 @@ class YvluPlugin extends Plugin {
   > = {
     yvlu: async (msg: any, trigger?: any) => {
       const start = Date.now();
-      const args = (msg.text || "").split(/\s+/);
-      let count = 1;
-      let r = false;
-      let valid = false;
-      let saveToSet = false;
-      let outputFormat: string | undefined = undefined; // webp / image / stories
+      const rawText = msg.text || "";
+      const args = rawText.trim().split(/\s+/);
 
       // 处理配置命令
-      if (args[1] === "config") {
+      if (args[1]?.toLowerCase() === "config") {
         await this.handleConfigCommand(msg, args.slice(2));
         return;
       }
 
-      if (!args[1] || /^\d+$/.test(args[1])) {
-        count = parseInt(args[1]) || 1;
-        valid = true;
-      } else if (args[1] === "r") {
-        r = true;
-        if (["webp", "image", "png", "stories"].includes(args[2])) {
-          outputFormat = args[2] === "png" ? "image" : args[2];
-          count = parseInt(args[3]) || 1;
-        } else {
-          count = parseInt(args[2]) || 1;
-        }
-        valid = true;
-      } else if (args[1] === "s") {
-        saveToSet = true;
-        valid = true;
-      } else if (["webp", "image", "png", "stories"].includes(args[1])) {
-        outputFormat = args[1] === "png" ? "image" : args[1];
-        count = parseInt(args[2]) || 1;
-        valid = true;
-      } else {
-        // 造谣文本本身也是合法参数，后续解析器会保留完整原文。
-        valid = true;
+      const parsed = parseYvluCommand(rawText);
+      if (parsed.error) {
+        await msg.edit({ text: parsed.error });
+        return;
       }
+      const {
+        count,
+        includeReply: r,
+        saveToSet,
+        outputFormat,
+        fabricateText,
+      } = parsed;
 
       if (saveToSet) {
         // 处理保存贴纸/图片到贴纸包的逻辑
         await this.handleSaveStickerToSet(msg);
-      } else if (valid) {
-        // 造谣模式：第一个非选项参数起，后续内容全部按原文保留。
-        const optionArgs = args.slice(1);
-        let fabricateText: string | undefined;
-        for (let i = 0; i < optionArgs.length; i++) {
-          const value = optionArgs[i].toLowerCase();
-          const isOption =
-            value === "r" ||
-            value === "reply" ||
-            value === "s" ||
-            value === "webp" ||
-            value === "image" ||
-            value === "png" ||
-            value === "stories" ||
-            /^\d+$/.test(value);
-          if (!isOption) {
-            fabricateText = optionArgs.slice(i).join(" ");
-            break;
-          }
-        }
-
+      } else {
         let replied = await safeGetReplyMessage(msg);
         if (!replied) {
           await msg.edit({ text: "请回复一条消息" });
@@ -849,7 +904,11 @@ class YvluPlugin extends Plugin {
           return;
         }
 
-        await msg.edit({ text: "正在生成语录贴纸..." });
+        await msg.edit({
+          text: fabricateText
+            ? "正在生成带虚构标识的语录贴纸..."
+            : "正在生成语录贴纸...",
+        });
 
         try {
           const client = await getGlobalClient();

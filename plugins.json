@@ -4,7 +4,7 @@
     "desc": "造谣版 quote"
   },
   "yvlu": {
-    "url": "https://github.com/TiaraBasori/my-telebox-next-plugins/blob/main/yvlu/yvlu.ts?raw=true",
-    "desc": "造谣版 yvlu"
+    "url": "https://raw.githubusercontent.com/wifehutao-0715/my-telebox-next-plugins/main/yvlu/yvlu.ts",
+    "desc": "带明确虚构标识的自定义语录版 yvlu"
   }
 }
