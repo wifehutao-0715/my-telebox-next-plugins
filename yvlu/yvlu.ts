@@ -358,8 +358,6 @@ interface ParsedYvluCommand {
   error?: string;
 }
 
-const YVLU_FABRICATION_LABEL = "【虚构内容·仅供娱乐】";
-
 function parseYvluCommand(messageText: string): ParsedYvluCommand {
   const result: ParsedYvluCommand = {
     count: 1,
@@ -378,10 +376,10 @@ function parseYvluCommand(messageText: string): ParsedYvluCommand {
     optionText = commandBody.slice(0, markerStart).trim();
     const customText = commandBody.slice(textStart).trim();
     if (!customText) {
-      result.error = `虚构模式缺少自定义内容。用法：${commandName} fake 文本`;
+      result.error = `自定义语录模式缺少内容。用法：${commandName} fake 文本`;
       return result;
     }
-    result.fabricateText = `${YVLU_FABRICATION_LABEL}\n${customText}`;
+    result.fabricateText = customText;
   }
 
   let hasCount = false;
@@ -422,7 +420,7 @@ function parseYvluCommand(messageText: string): ParsedYvluCommand {
   } else if (result.saveToSet && (optionArgs.length > 1 || result.fabricateText)) {
     result.error = `保存模式不能与其他参数组合。用法：${commandName} s`;
   } else if (result.fabricateText && hasCount && result.count !== 1) {
-    result.error = "虚构模式只处理被回复的单条消息，请移除消息数参数";
+    result.error = "自定义语录模式只处理被回复的单条消息，请移除消息数参数";
   }
 
   return result;
@@ -444,11 +442,10 @@ const help_text = [
   ),
   ``,
   helpFold(
-    `- 虚构语录（娱乐）`,
+    `- 自定义语录`,
     [
-      `使用 <code>${commandName} fake 自定义内容</code> 回复一条消息生成虚构语录`,
+      `使用 <code>${commandName} fake 自定义内容</code> 回复一条消息生成自定义语录`,
       `可在 fake 前组合格式与回复选项，例如 <code>${commandName} image r fake 自定义内容</code>`,
-      `成品会强制显示「${YVLU_FABRICATION_LABEL}」标识，避免被误认为真实发言`,
     ].join("\n"),
   ),
   ``,
@@ -806,7 +803,7 @@ interface YvluConfig {
 
 class YvluPlugin extends Plugin {
 
-  description: string = `\n生成文字语录贴纸，支持带明确标识的虚构语录模式\n\n${help_text}`;
+  description: string = `\n生成文字语录贴纸，支持自定义语录模式\n\n${help_text}`;
   private config: YvluConfig | null = null;
   private configPath: string = "";
 
@@ -906,7 +903,7 @@ class YvluPlugin extends Plugin {
 
         await msg.edit({
           text: fabricateText
-            ? "正在生成带虚构标识的语录贴纸..."
+            ? "正在生成自定义语录贴纸..."
             : "正在生成语录贴纸...",
         });
 
