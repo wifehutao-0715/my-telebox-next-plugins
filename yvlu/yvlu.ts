@@ -446,6 +446,7 @@ const help_text = [
     [
       `使用 <code>${commandName} fake 自定义内容</code> 回复一条消息生成自定义语录`,
       `可在 fake 前组合格式与回复选项，例如 <code>${commandName} image r fake 自定义内容</code>`,
+      `自定义模式只保留发送者信息与文字，不会带入原消息的 GIF、贴纸或其他媒体`,
     ].join("\n"),
   ),
   ``,
@@ -943,6 +944,8 @@ class YvluPlugin extends Plugin {
           let previousUserIdentifier: string | null = null;
 
           for (const [i, message] of messages.entries()) {
+            const isCustomTextMessage = fabricateText !== undefined && i === 0;
+
             // 获取发送者信息：mtcute 的 Message 已解析 `.sender`（Peer），无异步 getSender()
             let sender: EntityLike | null = (message.sender as EntityLike) || null;
 
@@ -1163,7 +1166,7 @@ class YvluPlugin extends Plugin {
 
             let media: { url: string } | undefined = undefined;
             try {
-              if (message.media) {
+              if (!isCustomTextMessage && message.media) {
                 let mediaTypeForQuote: string | undefined = undefined;
 
                 // 判断是否为贴纸 - check type/className instead of instanceof
@@ -1279,8 +1282,8 @@ class YvluPlugin extends Plugin {
                   ? String(emojiStatus)
                   : undefined,
               },
-              text: fabricateText && i === 0 ? fabricateText : (message.text || ""),
-              entities: fabricateText && i === 0 ? [] : entities,
+              text: isCustomTextMessage ? fabricateText : (message.text || ""),
+              entities: isCustomTextMessage ? [] : entities,
               avatar: shouldShowAvatar,
               ...(replyBlock ? { replyMessage: replyBlock } : {}),
             };
@@ -1288,7 +1291,7 @@ class YvluPlugin extends Plugin {
             // === quote-api glass 字段：voice / document / audio / forward / senderTag / mediaType / mediaDuration ===
 
             // 媒体
-            if (media) msgItem.media = media;
+            if (!isCustomTextMessage && media) msgItem.media = media;
 
             // 转发行标签
             if (message.forward) {
@@ -1306,7 +1309,7 @@ class YvluPlugin extends Plugin {
 
             // 媒体类型高级字段
             const mediaObj = (message as any).media;
-            if (mediaObj) {
+            if (!isCustomTextMessage && mediaObj) {
               const kind = getMediaKind(message as any);
               if (kind === "voice") {
                 const waveform = voiceWaveform(message as any);
