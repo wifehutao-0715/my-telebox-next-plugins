@@ -10,5 +10,9 @@
   "netease": {
     "url": "https://raw.githubusercontent.com/wifehutao-0715/my-telebox-next-plugins/b0ecc8d79d0ad2edd5f482f74720e7b001e8c788/netease/netease.ts",
     "desc": "网易云音乐搜索下载 netease"
+  },
+  "pic_to_sticker": {
+    "url": "https://raw.githubusercontent.com/wifehutao-0715/my-telebox-next-plugins/530bc10fdcfe11d98a6297c7cf8e8e07afbfeba4/pic_to_sticker/pic_to_sticker.ts",
+    "desc": "图片转 WebP 贴纸并可自动加入贴纸包"
   }
 }
