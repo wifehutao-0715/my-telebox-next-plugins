@@ -256,10 +256,47 @@ async function ensureQuoteAssets(): Promise<void> {
   );
 }
 
+function ensureVendorLruCacheCompatibility(): void {
+  const avatarPath = path.join(
+    quotePluginDir(),
+    "quote",
+    "vendor",
+    "quote-generate",
+    "avatar.js",
+  );
+  const source = fs.readFileSync(avatarPath, "utf8");
+  const compatibleImportPattern =
+    /const\s+lruCacheModule\s*=\s*require\((['"])lru-cache\1\)/;
+  if (compatibleImportPattern.test(source)) return;
+
+  const legacyImportPattern =
+    /const\s+LRU\s*=\s*require\((['"])lru-cache\1\)\s*;?/;
+  if (!legacyImportPattern.test(source)) {
+    logger.warn("quote loader could not patch unexpected avatar.js lru-cache import");
+    return;
+  }
+
+  const compatibleImport = [
+    "const lruCacheModule = require('lru-cache')",
+    "const LRU = typeof lruCacheModule === 'function'",
+    "  ? lruCacheModule",
+    "  : lruCacheModule.LRUCache || lruCacheModule.default",
+    "if (typeof LRU !== 'function') throw new TypeError('Unsupported lru-cache export')",
+  ].join("\n");
+
+  fs.writeFileSync(
+    avatarPath,
+    source.replace(legacyImportPattern, compatibleImport),
+    "utf8",
+  );
+  logger.warn("quote loader patched avatar.js for lru-cache compatibility");
+}
+
 async function getQuoteGen(): Promise<any> {
   if (!quoteGenPromise) {
     quoteGenPromise = (async () => {
       await ensureQuoteAssets();
+      ensureVendorLruCacheCompatibility();
       requireOrInstall("canvas");
       requireOrInstall("sharp");
       // vendor/ pulls these in at module load (quote-generate/index.js requires
@@ -1235,9 +1272,12 @@ function looksLikeAnimatedEmoji(buffer: Buffer | undefined): boolean {
   if (!buffer || buffer.length < 16) return false;
   const head = buffer.subarray(0, 64).toString("utf8");
   if (isAnimatedRasterBuffer(buffer)) return true;
-  if (head.includes("WEBM")) return true;
+  // WebM (EBML header + "webm" string): 0x1A 0x45 0xDF 0xA3 + "webm" in first 64 bytes
+  if (buffer[0] === 0x1a && buffer[1] === 0x45 && buffer[2] === 0xdf && buffer[3] === 0xa3 && head.includes("webm")) return true;
+  // Lottie JSON: starts with {"v" or has "layers"
   if (head.trimStart().startsWith("{\"v\"") || head.includes("\"layers\"")) return true;
-  if (buffer[0] === 0x1f && buffer[1] === 0x8b) return true; // .tgs gzip/lottie
+  // .tgs gzip/lottie
+  if (buffer[0] === 0x1f && buffer[1] === 0x8b) return true;
   return false;
 }
 

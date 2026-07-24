@@ -1,7 +1,11 @@
 // utils/quote-generate/avatar.js
 
 const { createCanvas, loadImage } = require('canvas')
-const LRU = require('lru-cache')
+const lruCacheModule = require('lru-cache')
+const LRU = typeof lruCacheModule === 'function'
+  ? lruCacheModule
+  : lruCacheModule.LRUCache || lruCacheModule.default
+if (typeof LRU !== 'function') throw new TypeError('Unsupported lru-cache export')
 const runes = require('runes')
 const loadImageFromUrl = require('../image-load-url')
 const { AVATAR_COLORS } = require('./constants')

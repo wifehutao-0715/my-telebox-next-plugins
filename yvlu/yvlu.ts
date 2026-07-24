@@ -475,6 +475,45 @@ interface ParsedYvluCommand {
   error?: string;
 }
 
+interface SelectedReplyQuote {
+  text: string;
+  entities: any[];
+}
+
+function getSelectedReplyQuote(...sources: any[]): SelectedReplyQuote | undefined {
+  const candidates: any[] = [];
+
+  for (const source of sources) {
+    if (!source) continue;
+    candidates.push(
+      source.replyToMessage,
+      source.replyTo,
+      source.raw?.replyTo,
+      source.message?.replyToMessage,
+      source.message?.replyTo,
+      source.message?.raw?.replyTo,
+    );
+  }
+
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    const raw = candidate.raw ?? candidate;
+    const isQuote = candidate.isQuote ?? candidate.quote ?? raw.quote;
+    const text = candidate.quoteText ?? raw.quoteText;
+    if (isQuote === false || typeof text !== "string" || text.length === 0) {
+      continue;
+    }
+
+    const entities = candidate.quoteEntities ?? raw.quoteEntities;
+    return {
+      text,
+      entities: Array.isArray(entities) ? entities : [],
+    };
+  }
+
+  return undefined;
+}
+
 function parseYvluCommand(messageText: string): ParsedYvluCommand {
   const result: ParsedYvluCommand = {
     count: 1,
@@ -1012,6 +1051,9 @@ class YvluPlugin extends Plugin {
         outputFormat,
         fabricateText,
       } = parsed;
+      const selectedReplyQuote = fabricateText === undefined
+        ? getSelectedReplyQuote(trigger, msg)
+        : undefined;
 
       if (saveToSet) {
         // 处理保存贴纸/图片到贴纸包的逻辑
@@ -1062,6 +1104,14 @@ class YvluPlugin extends Plugin {
 
           for (const [i, message] of messages.entries()) {
             const isCustomTextMessage = fabricateText !== undefined && i === 0;
+            const usesSelectedReplyQuote =
+              !isCustomTextMessage && i === 0 && selectedReplyQuote !== undefined;
+            const effectiveText = usesSelectedReplyQuote
+              ? selectedReplyQuote.text
+              : (message.text || "");
+            const effectiveMessageEntities = usesSelectedReplyQuote
+              ? selectedReplyQuote.entities
+              : (message.entities || []);
 
             // 获取发送者信息：mtcute 的 Message 已解析 `.sender`（Peer），无异步 getSender()
             let sender: EntityLike | null = (message.sender as EntityLike) || null;
@@ -1177,17 +1227,9 @@ class YvluPlugin extends Plugin {
               // 本地无需预下载 customEmojiBuffer（塞进请求会膨胀/易炸 JSON）。
             }
 
-            if (i === 0) {
-              const replyTo = (trigger || msg)?.replyTo;
-              if (replyTo?.quoteText) {
-                message.text = replyTo.quoteText;
-                message.entities = replyTo.quoteEntities || [];
-              }
-            }
-
             // 转换消息实体
             const entities = convertEntities(
-              message.entities || [],
+              effectiveMessageEntities,
             );
 
             // 处理回复引用（支持 quote header 与真实被回复消息）
@@ -1283,7 +1325,7 @@ class YvluPlugin extends Plugin {
 
             let media: { url: string } | undefined = undefined;
             try {
-              if (!isCustomTextMessage && message.media) {
+              if (!isCustomTextMessage && !usesSelectedReplyQuote && message.media) {
                 let mediaTypeForQuote: string | undefined = undefined;
 
                 // 判断是否为贴纸 - check type/className instead of instanceof
@@ -1433,7 +1475,7 @@ class YvluPlugin extends Plugin {
                   ? String(emojiStatus)
                   : undefined,
               },
-              text: isCustomTextMessage ? fabricateText : (message.text || ""),
+              text: isCustomTextMessage ? fabricateText : effectiveText,
               entities: isCustomTextMessage ? [] : entities,
               avatar: shouldShowAvatar,
               ...(replyBlock ? { replyMessage: replyBlock } : {}),
@@ -1442,7 +1484,9 @@ class YvluPlugin extends Plugin {
             // === quote-api glass 字段：voice / document / audio / forward / senderTag / mediaType / mediaDuration ===
 
             // 媒体
-            if (!isCustomTextMessage && media) msgItem.media = media;
+            if (!isCustomTextMessage && !usesSelectedReplyQuote && media) {
+              msgItem.media = media;
+            }
 
             // 转发行标签
             if (message.forward) {
@@ -1460,7 +1504,7 @@ class YvluPlugin extends Plugin {
 
             // 媒体类型高级字段
             const mediaObj = (message as any).media;
-            if (!isCustomTextMessage && mediaObj) {
+            if (!isCustomTextMessage && !usesSelectedReplyQuote && mediaObj) {
               const kind = getMediaKind(message as any);
               if (kind === "sticker" && media) {
                 msgItem.mediaType = "sticker";
