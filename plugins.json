@@ -1,10 +1,10 @@
 {
   "quote": {
-    "url": "https://github.com/TiaraBasori/my-telebox-next-plugins/blob/main/quote/quote.ts?raw=true",
+    "url": "https://raw.githubusercontent.com/wifehutao-0715/my-telebox-next-plugins/ac38b39f0296541d749a9295ff2340946c2f1bdf/quote/quote.ts",
     "desc": "造谣版 quote"
   },
   "yvlu": {
-    "url": "https://raw.githubusercontent.com/wifehutao-0715/my-telebox-next-plugins/3329ab30671e709e430d8244b03b129bbdad7dcf/yvlu/yvlu.ts",
+    "url": "https://raw.githubusercontent.com/wifehutao-0715/my-telebox-next-plugins/ac38b39f0296541d749a9295ff2340946c2f1bdf/yvlu/yvlu.ts",
     "desc": "自定义语录版 yvlu"
   },
   "netease": {
