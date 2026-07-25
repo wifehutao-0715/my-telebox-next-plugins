@@ -409,6 +409,58 @@ const getPeerNumericId = (peer?: any): number | undefined => {
   return undefined;
 };
 
+type PeerEntityKind = "user" | "chat";
+
+const getPeerEntityKind = (peer?: any): PeerEntityKind | undefined => {
+  if (!peer) return undefined;
+  const highLevelType = String(peer.type || "").toLowerCase();
+  if (highLevelType === "user") return "user";
+  if (["chat", "group", "channel", "supergroup"].includes(highLevelType)) {
+    return "chat";
+  }
+
+  const rawType = String(
+    peer._ || peer.raw?._ || peer.inputPeer?._ || "",
+  ).toLowerCase();
+  if (rawType.includes("user")) return "user";
+  if (rawType.includes("chat") || rawType.includes("channel")) return "chat";
+  return undefined;
+};
+
+const resolveFullPeerEntity = async (client: any, peer: any): Promise<any> => {
+  if (!client || !peer) return peer;
+  let target = peer;
+  let kind = getPeerEntityKind(target);
+
+  if (!kind && typeof client.resolvePeer === "function") {
+    target = await withTimeout(
+      client.resolvePeer(peer),
+      YVLU_EMOJI_TIMEOUT_MS,
+      "yvlu.resolveFullPeerEntity.resolvePeer",
+    );
+    kind = getPeerEntityKind(target);
+  }
+
+  if (kind === "user" && typeof client.getUsers === "function") {
+    const users = await withTimeout(
+      client.getUsers(target),
+      YVLU_EMOJI_TIMEOUT_MS,
+      "yvlu.resolveFullPeerEntity.getUsers",
+    );
+    return (Array.isArray(users) ? users[0] : users) || target;
+  }
+
+  if (kind === "chat" && typeof client.getChat === "function") {
+    return await withTimeout(
+      client.getChat(target),
+      YVLU_EMOJI_TIMEOUT_MS,
+      "yvlu.resolveFullPeerEntity.getChat",
+    );
+  }
+
+  return target;
+};
+
 const resolveForwardSenderFromHeader = async (
   forwardHeader: any,
   client: any,
@@ -430,7 +482,7 @@ const resolveForwardSenderFromHeader = async (
 
   for (const peer of peerCandidates) {
     try {
-      const entity = await client?.resolvePeer(peer);
+      const entity = await resolveFullPeerEntity(client, peer);
       if (entity) {
         return entity;
       }
@@ -926,18 +978,79 @@ async function generateQuote(
   }
 }
 
-async function downloadProfilePhotoBuffer(client: any, sender: EntityLike): Promise<Buffer | undefined> {
-  const photos = await client.getProfilePhotos(sender as any, { limit: 1 });
-  const photo = photos?.[0];
+async function downloadPeerPhotoCandidate(
+  client: any,
+  candidate: unknown,
+): Promise<Buffer | undefined> {
+  if (!candidate) return undefined;
+  const direct = asBuffer(candidate);
+  if (direct?.length) return direct;
+  try {
+    const data = await client.downloadAsBuffer(candidate as any);
+    const buffer = Buffer.from(data);
+    return buffer.length > 0 ? buffer : undefined;
+  } catch (error: unknown) {
+    logger.debug("yvlu current peer photo download failed", error);
+    return undefined;
+  }
+}
+
+async function downloadCurrentPeerPhoto(
+  client: any,
+  sender: any,
+): Promise<Buffer | undefined> {
+  let photo: any;
+  try {
+    photo = sender?.photo;
+  } catch (error: unknown) {
+    logger.debug("yvlu peer photo getter failed", error);
+    return undefined;
+  }
   if (!photo) return undefined;
-  const data = await client.downloadAsBuffer(photo);
-  const buffer = Buffer.from(data);
-  return buffer.length > 0 ? buffer : undefined;
+
+  const candidates: unknown[] = [];
+  for (const key of ["big", "small", "thumb"]) {
+    try {
+      candidates.push(photo[key]);
+    } catch (error: unknown) {
+      logger.debug(`yvlu peer photo ${key} getter failed`, error);
+    }
+  }
+
+  for (const candidate of candidates) {
+    const buffer = await downloadPeerPhotoCandidate(client, candidate);
+    if (buffer) return buffer;
+  }
+  return undefined;
+}
+
+async function downloadProfilePhotoBuffer(client: any, sender: EntityLike): Promise<Buffer | undefined> {
+  let entity: any = sender;
+  let buffer = await downloadCurrentPeerPhoto(client, entity);
+  if (buffer) return buffer;
+
+  try {
+    entity = await resolveFullPeerEntity(client, entity);
+    buffer = await downloadCurrentPeerPhoto(client, entity);
+    if (buffer) return buffer;
+  } catch (error: unknown) {
+    logger.debug("yvlu peer refresh for avatar failed", error);
+  }
+
+  if (getPeerEntityKind(entity) !== "user" || typeof client.getProfilePhotos !== "function") {
+    return undefined;
+  }
+
+  const photos = await client.getProfilePhotos(entity, { limit: 1 });
+  const profilePhoto = photos?.[0];
+  if (!profilePhoto) return undefined;
+  return downloadPeerPhotoCandidate(client, profilePhoto);
 }
 
 async function ensureFullUser(client: any, sender: any): Promise<any> {
   if (!client || !sender) return sender;
   try {
+    if (getPeerEntityKind(sender) !== "user") return sender;
     const isMin = !!(sender.isMin || sender.raw?.min);
     const hasStatusField =
       sender.emojiStatus != null ||

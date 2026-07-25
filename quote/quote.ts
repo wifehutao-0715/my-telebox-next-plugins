@@ -725,13 +725,64 @@ function stableEntityKey(entity: unknown): string | undefined {
   try { return typeof raw === "bigint" ? raw.toString() : JSON.stringify(raw, (_, v) => typeof v === "bigint" ? v.toString() : v); } catch (_: unknown) { logger.debug("[quote] JSON stringify failed, falling back to String()", _); return String(raw); }
 }
 
+type QuotePeerEntityKind = "user" | "chat";
+
+function quotePeerEntityKind(peer: any): QuotePeerEntityKind | undefined {
+  if (!peer) return undefined;
+  const highLevelType = String(peer.type || "").toLowerCase();
+  if (highLevelType === "user") return "user";
+  if (["chat", "group", "channel", "supergroup"].includes(highLevelType)) {
+    return "chat";
+  }
+
+  const rawType = String(
+    peer._ || peer.raw?._ || peer.inputPeer?._ || "",
+  ).toLowerCase();
+  if (rawType.includes("user")) return "user";
+  if (rawType.includes("chat") || rawType.includes("channel")) return "chat";
+  return undefined;
+}
+
+async function resolveFullQuotePeer(client: any, peer: any): Promise<any> {
+  if (!client || !peer) return peer;
+  let target = peer;
+  let kind = quotePeerEntityKind(target);
+
+  if (!kind && typeof client.resolvePeer === "function") {
+    target = await withTimeout(
+      client.resolvePeer(peer),
+      QUOTE_RPC_TIMEOUT_MS,
+      "quote.resolveFullQuotePeer.resolvePeer",
+    );
+    kind = quotePeerEntityKind(target);
+  }
+
+  if (kind === "user" && typeof client.getUsers === "function") {
+    const users = await withTimeout(
+      client.getUsers(target),
+      QUOTE_RPC_TIMEOUT_MS,
+      "quote.resolveFullQuotePeer.getUsers",
+    );
+    return (Array.isArray(users) ? users[0] : users) || target;
+  }
+
+  if (kind === "chat" && typeof client.getChat === "function") {
+    return await withTimeout(
+      client.getChat(target),
+      QUOTE_RPC_TIMEOUT_MS,
+      "quote.resolveFullQuotePeer.getChat",
+    );
+  }
+
+  return target;
+}
+
 async function getPeerEntity(client: unknown, peer: unknown): Promise<unknown | undefined> {
   if (!client || !peer) return undefined;
   const key = JSON.stringify(peer, (_, v) => typeof v === "bigint" ? v.toString() : v);
   if (entityCache.has(key)) return entityCache.get(key);
   try {
-    const clientWithInternals = client as { resolvePeer: (p: unknown) => Promise<unknown> };
-    const entity = await clientWithInternals.resolvePeer(peer);
+    const entity = await resolveFullQuotePeer(client as any, peer);
     entityCache.set(key, entity);
     return entity;
   } catch (_: unknown) {
@@ -751,7 +802,7 @@ async function ensureFullUser(client: any, entity: any): Promise<any> {
       entity.raw?.emoji_status != null;
     // min peers omit many fields including emojiStatus; refresh when missing
     if (!isMin && hasStatusField) return entity;
-    if (entity.type && entity.type !== "user") return entity;
+    if (quotePeerEntityKind(entity) !== "user") return entity;
     if (typeof client.getUsers !== "function") return entity;
     const users = await withTimeout(
       client.getUsers(entity),
@@ -1022,21 +1073,84 @@ async function normalizeAvatarBuffer(buffer: Buffer): Promise<Buffer | undefined
   }
 }
 
+function avatarBufferFromUnknown(value: unknown): Buffer | undefined {
+  if (Buffer.isBuffer(value)) return value.length > 0 ? value : undefined;
+  if (value instanceof Uint8Array) {
+    const buffer = Buffer.from(value);
+    return buffer.length > 0 ? buffer : undefined;
+  }
+  return undefined;
+}
+
+async function downloadQuoteAvatarCandidate(
+  client: any,
+  candidate: unknown,
+): Promise<Buffer | undefined> {
+  if (!candidate) return undefined;
+  const direct = avatarBufferFromUnknown(candidate);
+  if (direct) return direct;
+  try {
+    const data = await client.downloadAsBuffer(candidate as any);
+    return avatarBufferFromUnknown(data);
+  } catch (err: unknown) {
+    logger.debug("quote current peer photo download failed", getErrorMessage(err));
+    return undefined;
+  }
+}
+
+async function downloadCurrentQuotePeerPhoto(
+  client: any,
+  entity: any,
+): Promise<Buffer | undefined> {
+  let photo: any;
+  try {
+    photo = entity?.photo;
+  } catch (err: unknown) {
+    logger.debug("quote peer photo getter failed", getErrorMessage(err));
+    return undefined;
+  }
+  if (!photo) return undefined;
+
+  const candidates: unknown[] = [];
+  for (const key of ["big", "small", "thumb"]) {
+    try {
+      candidates.push(photo[key]);
+    } catch (err: unknown) {
+      logger.debug(`quote peer photo ${key} getter failed`, getErrorMessage(err));
+    }
+  }
+
+  for (const candidate of candidates) {
+    const buffer = await downloadQuoteAvatarCandidate(client, candidate);
+    if (buffer) return buffer;
+  }
+  return undefined;
+}
+
 async function downloadEntityAvatar(client: any, entity: any): Promise<Buffer | undefined> {
   if (!client || !entity) return undefined;
   const key = stableEntityKey(entity);
   if (key && avatarCache.has(key)) return avatarCache.get(key);
 
   try {
-    const photos = await client.getProfilePhotos(entity, { limit: 1 });
-    const photo = photos?.[0];
-    if (!photo) {
-      if (key) avatarCache.set(key, undefined);
-      return undefined;
+    let avatarEntity = entity;
+    let buffer = await downloadCurrentQuotePeerPhoto(client, avatarEntity);
+
+    if (!buffer) {
+      avatarEntity = await resolveFullQuotePeer(client, avatarEntity);
+      buffer = await downloadCurrentQuotePeerPhoto(client, avatarEntity);
     }
-    const data = await client.downloadAsBuffer(photo);
-    const buffer = Buffer.from(data);
-    if (!(Buffer.isBuffer(buffer) && buffer.length > 0)) {
+
+    if (
+      !buffer &&
+      quotePeerEntityKind(avatarEntity) === "user" &&
+      typeof client.getProfilePhotos === "function"
+    ) {
+      const photos = await client.getProfilePhotos(avatarEntity, { limit: 1 });
+      buffer = await downloadQuoteAvatarCandidate(client, photos?.[0]);
+    }
+
+    if (!buffer) {
       if (key) avatarCache.set(key, undefined);
       return undefined;
     }
