@@ -18,5 +18,9 @@
   "jx": {
     "url": "https://raw.githubusercontent.com/wifehutao-0715/my-telebox-next-plugins/d6d5d1238ffbdf043e31ba8b9dbdf1fb16ded52e/jx/jx.ts",
     "desc": "ParseHub 解析转发 jx"
+  },
+  "ai": {
+    "url": "https://raw.githubusercontent.com/wifehutao-0715/my-telebox-next-plugins/ab64201d187c12ec4df597b1e08d6c411ae0c3bf/ai/ai.ts",
+    "desc": "mtcute 多 API AI 助手"
   }
 }
