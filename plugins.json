@@ -14,5 +14,9 @@
   "pic_to_sticker": {
     "url": "https://raw.githubusercontent.com/wifehutao-0715/my-telebox-next-plugins/530bc10fdcfe11d98a6297c7cf8e8e07afbfeba4/pic_to_sticker/pic_to_sticker.ts",
     "desc": "图片转 WebP 贴纸并可自动加入贴纸包"
+  },
+  "jx": {
+    "url": "https://raw.githubusercontent.com/wifehutao-0715/my-telebox-next-plugins/d6d5d1238ffbdf043e31ba8b9dbdf1fb16ded52e/jx/jx.ts",
+    "desc": "ParseHub 解析转发 jx"
   }
 }
