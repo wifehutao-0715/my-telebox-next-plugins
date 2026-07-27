@@ -20,7 +20,7 @@
     "desc": "ParseHub 解析转发 jx"
   },
   "ai": {
-    "url": "https://raw.githubusercontent.com/wifehutao-0715/my-telebox-next-plugins/ab64201d187c12ec4df597b1e08d6c411ae0c3bf/ai/ai.ts",
+    "url": "https://raw.githubusercontent.com/wifehutao-0715/my-telebox-next-plugins/97a8d5c0b20adb8e7469c70ca3470d529c494041/ai/ai.ts",
     "desc": "mtcute 多 API AI 助手"
   }
 }
