@@ -81,6 +81,8 @@ interface ProviderEntry {
   stream: boolean;
   responses: boolean;
   model?: string;
+  /** 最近一次展示给用户的模型顺序，按序号切换时必须使用同一份快照 */
+  models?: string[];
 }
 
 interface MemoryEntry {
@@ -175,7 +177,7 @@ function defaultConfig(): AiConfig {
     videoAudio: false,
     videoDuration: 5,
     prompt: "",
-    collapse: false,
+    collapse: true,
     timeout: 60000,
     telegraphToken: "",
     telegraph: { enabled: false, limit: 10, list: [] },
@@ -209,6 +211,7 @@ function normalizeConfig(config: AiConfig): AiConfig {
     entry.key = String(entry.key || "");
     entry.stream = entry.stream ?? true;
     entry.responses = entry.responses ?? false;
+    entry.models = normalizeModelIds(entry.models);
   }
   const entries = Object.values(config.configs || {});
   if (!entries.length) {
@@ -931,6 +934,40 @@ function sanitizeTag(value: string): string {
   return tag || "provider";
 }
 
+function normalizeModelIds(models: unknown): string[] {
+  if (!Array.isArray(models)) return [];
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const item of models) {
+    let id = String(item || "").trim();
+    if (id.startsWith("models/")) id = id.slice("models/".length);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    result.push(id);
+    if (result.length >= 500) break;
+  }
+  return result;
+}
+
+function saveModelSnapshot(config: AiConfig, tag: string, models: string[]): string[] {
+  const normalized = normalizeModelIds(models);
+  const entry = config.configs[tag];
+  if (entry && normalized.length) entry.models = normalized;
+  return normalized;
+}
+
+/** 同一个写事务里同时切换 API、全局模型和供应商模型，避免并发时串台。 */
+function activateModel(config: AiConfig, tag: string, model: string, models: string[] = []): boolean {
+  const entry = config.configs[tag];
+  const selected = String(model || "").trim();
+  if (!entry || !selected) return false;
+  config.currentChatTag = tag;
+  config.currentChatModel = selected;
+  entry.model = selected;
+  saveModelSnapshot(config, tag, models);
+  return true;
+}
+
 function resolveEntry(config: AiConfig, tag?: string): ProviderEntry | null {
   const tags = Object.keys(config.configs || {});
   if (!tags.length) return null;
@@ -1096,6 +1133,7 @@ const NON_CHAT_MODEL =
 /** 兼容 openai(data[].id/created)、gemini(models[].name)、anthropic(data[].created_at) 以及纯字符串数组 */
 function toModelInfos(list: unknown): ModelInfo[] {
   if (!Array.isArray(list)) return [];
+  const seen = new Set<string>();
   return list
     .map((item: any) => {
       const id = String(item?.id || item?.name || (typeof item === "string" ? item : "") || "")
@@ -1111,7 +1149,11 @@ function toModelInfos(list: unknown): ModelInfo[] {
       }
       return { id, created };
     })
-    .filter((item) => item.id);
+    .filter((item) => {
+      if (!item.id || seen.has(item.id)) return false;
+      seen.add(item.id);
+      return true;
+    });
 }
 
 async function fetchModelList(entry: ProviderEntry, timeout: number): Promise<ModelInfo[]> {
@@ -1334,8 +1376,12 @@ async function saveExtracted(item: ExtractedApi): Promise<{ tag: string; created
       existing.key = item.key;
       existing.type = existing.type || type;
       if (item.model) existing.model = item.model;
-      config.currentChatTag = existing.tag;
-      config.currentChatModel = existing.model || item.model || "";
+      saveModelSnapshot(config, existing.tag, item.models);
+      const selected = item.model || existing.model || "";
+      if (!activateModel(config, existing.tag, selected)) {
+        config.currentChatTag = existing.tag;
+        config.currentChatModel = "";
+      }
       return { tag: existing.tag, created: false };
     }
 
@@ -1351,9 +1397,12 @@ async function saveExtracted(item: ExtractedApi): Promise<{ tag: string; created
       stream: true,
       responses: type === "responses",
       model: item.model || "",
+      models: normalizeModelIds(item.models),
     };
-    config.currentChatTag = tag;
-    config.currentChatModel = item.model || "";
+    if (!activateModel(config, tag, item.model || "")) {
+      config.currentChatTag = tag;
+      config.currentChatModel = "";
+    }
     return { tag, created: true };
   });
 }
@@ -2149,17 +2198,18 @@ async function runChat(msg: any, request: ChatRequest): Promise<void> {
   }
 }
 
-const COLLAPSE_THRESHOLD = 1200; // 超过这个长度就自动折叠尾部
-const PREVIEW_MIN = 280; // 展开前至少露出这么多
-const PREVIEW_MAX = 900; // 找不到分段点就放弃折叠
+const COLLAPSE_THRESHOLD = 220; // 旧配置即使关闭折叠，中等长度回复也会自动收起
+const COLLAPSE_ENABLED_THRESHOLD = 120; // 面板开启折叠时，仅很短的回答保持展开
+const PREVIEW_MIN = 90; // 展开前至少露出这么多
+const PREVIEW_MAX = 220; // 找不到分段点就放弃折叠
 
 /**
  * 长回答自动折叠：保留开头一段，其余塞进 <details>。
  * 只在空行处切，且不会切进代码块；模型自己已经用了 <details> 就不再插手。
  */
-function collapseLongAnswer(markdown: string): string {
+function collapseLongAnswer(markdown: string, threshold = COLLAPSE_THRESHOLD): string {
   const text = String(markdown || "").trim();
-  if (text.length <= COLLAPSE_THRESHOLD || /<details/i.test(text)) return text;
+  if (text.length <= threshold || /<details/i.test(text)) return text;
 
   const lines = text.split("\n");
   let fence = false;
@@ -2198,6 +2248,8 @@ async function renderAnswer(
   meta: { startedAt: number; usage?: Usage; skill?: string; echo?: string }
 ): Promise<void> {
   const clean = redact(answer, provider);
+  const collapseThreshold = config.collapse ? COLLAPSE_ENABLED_THRESHOLD : COLLAPSE_THRESHOLD;
+  const shouldCollapse = clean.length > collapseThreshold;
   // 顶部回显用户发的原文，独占一行
   const echo = compact(String(meta.echo || "").replace(/`/g, "'"), 200);
 
@@ -2207,7 +2259,7 @@ async function renderAnswer(
     const parts = [
       head,
       head && clean.length > 400 ? "---" : "", // 长回答才加分割线，短的不显得笨重
-      config.collapse ? collapseLongAnswer(clean) : clean,
+      shouldCollapse ? collapseLongAnswer(clean, collapseThreshold) : clean,
     ].filter(Boolean);
     const rich = prepareRichMarkdown(parts.join("\n\n"));
     if (await editRichMessage(msg, rich.markdown, rich.plain)) return;
@@ -2230,7 +2282,7 @@ async function renderAnswer(
 
   // 模型输出的富文本先整体渲染，再按行分片并逐片补齐标签
   // 降级路径没有 <details>，长回答改用可展开引用块保持折叠效果
-  const collapsible = config.collapse && clean.length > 800;
+  const collapsible = shouldCollapse;
   const wrap = (chunk: string) => (collapsible ? `<blockquote expandable>${chunk}</blockquote>` : chunk);
   const chunks = splitMarkdown(renderRich(clean), 3200).map((chunk) => sanitizeTelegramHtml(chunk));
   let anchor = await editHtml(msg, [header, wrap(chunks[0])].filter(Boolean).join("\n"));
@@ -2278,46 +2330,62 @@ async function handleModelList(msg: any, body: string): Promise<void> {
   }
 
   const wanted = body.trim();
-  await showRich(msg, `> 🔍 正在读取 **${entry.tag}** 的模型列表…`);
+  const requestedIndex = /^\d+$/.test(wanted) ? Number.parseInt(wanted, 10) : 0;
+  const savedModels = normalizeModelIds(entry.models?.length ? entry.models : modelListCache.get(entry.tag) || []);
+  const shouldFetch = !requestedIndex || !savedModels.length;
+  if (shouldFetch) await showRich(msg, `> 🔍 正在读取 **${entry.tag}** 的模型列表…`);
 
   let infos: ModelInfo[] = [];
   let listError = "";
-  try {
-    infos = await fetchModelList(entry, Math.min(config.timeout, 30000));
-  } catch (error) {
-    listError = redact(formatProviderError(error), toProvider(config, entry));
+  if (shouldFetch) {
+    try {
+      infos = await fetchModelList(entry, Math.min(config.timeout, 30000));
+    } catch (error) {
+      listError = redact(formatProviderError(error), toProvider(config, entry));
+    }
   }
-  if (infos.length) modelListCache.set(entry.tag, infos.map((item) => item.id));
+  const fetchedModels = normalizeModelIds(infos.map((item) => item.id));
+  if (fetchedModels.length) modelListCache.set(entry.tag, fetchedModels);
+  const availableModels = requestedIndex && savedModels.length
+    ? savedModels
+    : fetchedModels.length
+      ? fetchedModels
+      : savedModels;
+  const availableInfos = availableModels.map((id) => infos.find((item) => item.id === id) || { id });
 
   // 指定了模型名/序号：直接切换，不做测试
   if (wanted) {
     let model = "";
-    if (/^\d+$/.test(wanted)) {
-      const cached = infos.length ? infos.map((item) => item.id) : modelListCache.get(entry.tag) || [];
-      model = cached[Number.parseInt(wanted, 10) - 1] || "";
+    if (requestedIndex) {
+      model = availableModels[requestedIndex - 1] || "";
       if (!model) {
-        await showRich(msg, errCard(cached.length ? `序号超出范围（1-${cached.length}）` : `拿不到模型列表${listError ? `：${listError}` : ""}`));
+        await showRich(msg, errCard(availableModels.length ? `序号超出范围（1-${availableModels.length}）` : `拿不到模型列表${listError ? `：${listError}` : ""}`));
         return;
       }
     } else {
-      model = matchModel(infos, wanted) || wanted;
+      model = matchModel(availableInfos, wanted) || wanted;
     }
 
-    await updateConfig((current) => {
-      current.currentChatModel = model;
-      if (current.configs[entry.tag]) current.configs[entry.tag].model = model;
-    });
-    await showRich(msg, okCard(`已切换 \`${model}\``, `未测试，需要测试用 ${mainPrefix}ai qh`));
+    const updated = await updateConfig((current) => activateModel(current, entry.tag, model, fetchedModels));
+    if (!updated) {
+      await showRich(msg, errCard("切换期间 API 配置已变化，请重新执行命令"));
+      return;
+    }
+    const source = requestedIndex && savedModels.length ? "按上次展示的序号切换" : "模型已保存到当前 API";
+    await showRich(msg, okCard(`已切换 \`${model}\``, `${source}；需要测试用 ${mainPrefix}ai qh`));
     return;
   }
 
-  if (!infos.length) {
+  if (!availableModels.length) {
     await showRich(msg, errCard(["拿不到模型列表", listError].filter(Boolean).join("\n")));
     return;
   }
 
-  const models = infos.map((item) => item.id);
-  const latest = pickLatestModel(infos);
+  if (fetchedModels.length) {
+    await updateConfig((current) => saveModelSnapshot(current, entry.tag, fetchedModels));
+  }
+  const models = availableModels;
+  const latest = pickLatestModel(availableInfos);
   const current = config.currentChatModel || entry.model || "";
   const shown = models.slice(0, 80);
   const rows = shown.map((model, index) => {
@@ -2382,23 +2450,32 @@ async function handleApi(msg: any, body: string): Promise<void> {
     }
 
     let model = entry.model || "";
+    let fetchedModels: string[] = [];
     let modelNote = model ? "使用该 API 已保存的模型" : "尚未选择模型";
     if (!model) {
       try {
         const models = await fetchModelList(entry, Math.min(config.timeout, 30000));
         model = pickLatestModel(models);
-        if (models.length) modelListCache.set(entry.tag, models.map((item) => item.id));
+        fetchedModels = normalizeModelIds(models.map((item) => item.id));
+        if (fetchedModels.length) modelListCache.set(entry.tag, fetchedModels);
         if (model) modelNote = "已自动选择最新模型";
       } catch {
         // 切换 API 本身仍然成功，之后可用 .ai mx 手动选择模型
       }
     }
 
-    await updateConfig((current) => {
+    const switched = await updateConfig((current) => {
+      if (model) return activateModel(current, entry.tag, model, fetchedModels);
+      if (!current.configs[entry.tag]) return false;
       current.currentChatTag = entry.tag;
-      current.currentChatModel = model;
-      if (current.configs[entry.tag] && model) current.configs[entry.tag].model = model;
+      current.currentChatModel = "";
+      saveModelSnapshot(current, entry.tag, fetchedModels);
+      return true;
     });
+    if (!switched) {
+      await showRich(msg, errCard("切换期间 API 配置已变化，请重新执行命令"));
+      return;
+    }
     await showRich(
       msg,
       infoCard("✅ API 已切换", [
@@ -2527,12 +2604,13 @@ async function handleSwitch(msg: any, body: string): Promise<void> {
     return;
   }
 
-  await updateConfig((current) => {
-    current.currentChatTag = entry.tag;
-    current.currentChatModel = model;
-    if (current.configs[entry.tag]) current.configs[entry.tag].model = model;
-  });
-  if (models.length && !fromText) modelListCache.set(entry.tag, models.map((item) => item.id));
+  const modelIds = normalizeModelIds(models.map((item) => item.id));
+  const switched = await updateConfig((current) => activateModel(current, entry.tag, model, modelIds));
+  if (!switched) {
+    await showRich(msg, errCard("切换期间 API 配置已变化，请重新执行命令"));
+    return;
+  }
+  if (modelIds.length) modelListCache.set(entry.tag, modelIds);
 
   const after = await readConfig();
   const provider = toProvider(after, after.configs[entry.tag] || entry);
