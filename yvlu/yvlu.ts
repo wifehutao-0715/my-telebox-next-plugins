@@ -634,6 +634,52 @@ function parseYvluCommand(messageText: string): ParsedYvluCommand {
   return result;
 }
 
+function messageIdOf(message: any): number {
+  const id = Number(message?.id);
+  return Number.isSafeInteger(id) && id > 0 ? id : 0;
+}
+
+/**
+ * 从被回复消息开始按时间顺序收集连续消息。
+ * mtcute 的 reverse=true 必须配合 offset 使用；只传 minId 会从默认 offset=1 开始并返回空数组。
+ */
+async function collectConsecutiveMessages(
+  client: any,
+  commandMessage: any,
+  replied: any,
+  count: number,
+): Promise<any[]> {
+  const targetCount = Math.min(5, Math.max(1, Math.trunc(count || 1)));
+  if (targetCount <= 1) return [replied];
+
+  const repliedId = messageIdOf(replied);
+  const commandId = messageIdOf(commandMessage);
+  if (!repliedId) return [replied];
+
+  const history = await safeGetMessages(client, commandMessage.chat, {
+    offsetId: repliedId,
+    limit: Math.min(20, targetCount + 6),
+    reverse: true,
+  }).catch((error: unknown) => {
+    logger.warn("[yvlu] 获取连续消息失败，回退到单条消息:", error);
+    return [];
+  });
+
+  const unique = new Map<number, any>();
+  for (const candidate of [replied, ...history]) {
+    const id = messageIdOf(candidate);
+    if (!id || id < repliedId) continue;
+    if (commandId && id >= commandId) continue;
+    if (candidate?.isService) continue;
+    if (!unique.has(id)) unique.set(id, candidate);
+  }
+
+  const messages = Array.from(unique.values())
+    .sort((left, right) => messageIdOf(left) - messageIdOf(right))
+    .slice(0, targetCount);
+  return messages.length ? messages : [replied];
+}
+
 // 完整 helptext 单段进 description；标题外露，板块正文用可折叠 blockquote
 // 标签与正文之间禁止换行：<blockquote expandable>内容</blockquote>
 const helpFold = (title: string, body: string) =>
@@ -1191,21 +1237,7 @@ class YvluPlugin extends Plugin {
         try {
           const client = await getGlobalClient();
 
-          // count=1 直接用被回复消息；多条用 minId 保证包含 replied（mtcute reverse offset 语义不稳）
-          let messages: any[];
-          if (count <= 1) {
-            messages = [replied];
-          } else {
-            const history = await client.getHistory(msg.chat, {
-              minId: replied!.id,
-              limit: count,
-              reverse: true,
-            }).catch(() => []);
-            messages = Array.isArray(history) ? history : [];
-            if (!messages.some((m: any) => Number(m?.id) === Number(replied.id))) {
-              messages = [replied, ...messages].slice(0, count);
-            }
-          }
+          const messages = await collectConsecutiveMessages(client, msg, replied, count);
 
           if (!messages || messages.length === 0) {
             await msg.edit({ text: "未找到消息" });
