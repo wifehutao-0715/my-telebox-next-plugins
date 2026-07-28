@@ -1,5 +1,5 @@
 import { Plugin, type PanelSettingsAdapter, type PanelSettingField } from "@utils/pluginBase";
-import type { InputPeerLike } from "@mtcute/core";
+import { tl, type InputPeerLike } from "@mtcute/core";
 import type { MessageContext } from "@mtcute/dispatcher";
 import { thtml as html } from "@mtcute/html-parser";
 import { getGlobalClient } from "@utils/runtimeManager";
@@ -406,6 +406,8 @@ class EatGifPlugin extends Plugin {
       frames,
     });
 
+    const duration = frames.reduce((total, frame) => total + (frame.delay ?? 100), 0) / 1000;
+
     const gifPath = path.join(TEMP_PATH, "output.gif");
     const webmPath = path.join(TEMP_PATH, "output.webm");
 
@@ -428,11 +430,38 @@ class EatGifPlugin extends Plugin {
 
       const replyMsg = trigger ? (await safeGetReplyMessage(trigger)) || (await safeGetReplyMessage(msg)) : await safeGetReplyMessage(msg);
 
-      await client.sendMedia(msg.chat.id, {
-        type: "document",
+      const uploadedWebm = await client.uploadFile({
         file: webmPath,
         fileName: "sticker.webm",
-      }, {
+        fileMime: "video/webm",
+      });
+      const videoSticker: tl.RawInputMediaUploadedDocument = {
+        _: "inputMediaUploadedDocument",
+        file: uploadedWebm.inputFile,
+        mimeType: "video/webm",
+        nosoundVideo: true,
+        attributes: [
+          {
+            _: "documentAttributeFilename",
+            fileName: "sticker.webm",
+          },
+          {
+            _: "documentAttributeVideo",
+            duration,
+            w: gifConfig.width,
+            h: gifConfig.height,
+            nosound: true,
+            videoCodec: "vp9",
+          },
+          {
+            _: "documentAttributeSticker",
+            alt: "✨",
+            stickerset: { _: "inputStickerSetEmpty" },
+          },
+        ],
+      };
+
+      await client.sendMedia(msg.chat.id, videoSticker, {
         replyTo: replyMsg?.id,
       });
     } catch (e: unknown) {
@@ -442,11 +471,30 @@ class EatGifPlugin extends Plugin {
       const client = await getGlobalClient();
       if (client) {
         const replyMsg = trigger ? (await safeGetReplyMessage(trigger)) || (await safeGetReplyMessage(msg)) : await safeGetReplyMessage(msg);
-        await client.sendMedia(msg.chat.id, {
-          type: "document",
+        const uploadedGif = await client.uploadFile({
           file: gifPath,
-          fileName: "sticker.gif",
-        }, {
+          fileName: "animation.gif",
+          fileMime: "image/gif",
+        });
+        const animatedGif: tl.RawInputMediaUploadedDocument = {
+          _: "inputMediaUploadedDocument",
+          file: uploadedGif.inputFile,
+          mimeType: "image/gif",
+          attributes: [
+            {
+              _: "documentAttributeFilename",
+              fileName: "animation.gif",
+            },
+            {
+              _: "documentAttributeImageSize",
+              w: gifConfig.width,
+              h: gifConfig.height,
+            },
+            { _: "documentAttributeAnimated" },
+          ],
+        };
+
+        await client.sendMedia(msg.chat.id, animatedGif, {
           replyTo: replyMsg?.id,
         });
       }
