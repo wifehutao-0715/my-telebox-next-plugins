@@ -24,7 +24,7 @@
     "desc": "mtcute 多 API AI 助手"
   },
   "eatgif": {
-    "url": "https://raw.githubusercontent.com/wifehutao-0715/my-telebox-next-plugins/c6facc0b70cc72e939c9b0e0e9ca359becc3580c/eatgif/eatgif.ts",
+    "url": "https://raw.githubusercontent.com/wifehutao-0715/my-telebox-next-plugins/4d64bde3d3dda5afff26783b108690c9be460638/eatgif/eatgif.ts",
     "desc": "支持回复及指定单人、双人头像的 eatgif 动图表情"
   }
 }
